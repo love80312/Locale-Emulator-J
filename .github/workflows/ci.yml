@@ -1,13 +1,12 @@
 # ============================================================
-# Locale Emulator - Personal Build Workflow
-# Optimized for Windows 10 x64 (Compatible with 32-bit Apps)
+# Locale Emulator - Personal Release Workflow (forme)
 # ============================================================
 
 name: Build Release
 
 on:
   push:
-    branches: [ "forme" ] # 僅在個人分支觸發
+    branches: [ "forme" ]
 
 permissions:
   contents: read
@@ -20,7 +19,9 @@ env:
 jobs:
   build:
     name: Full Build & Package
-    runs-on: windows-latest
+    # 這裡建議使用 windows-latest，我們會手動處理工具鏈降級(v143)
+    # 如果你的專案非要 v145，請確保環境支援
+    runs-runs-on: windows-latest
 
     steps:
       - name: Checkout repository
@@ -28,66 +29,65 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Setup .NET SDK
+      - name: Setup .NET 10 SDK
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: '10.0.x' # 使用專案指定的 .NET 10
+          dotnet-version: '10.0.x'
 
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
 
-      # ---- 1. 編譯 .NET 組件 (主程序部分) ----
-      - name: Restore & Build .NET
-        run: |
-          dotnet restore
-          dotnet build src/LECommonLibrary/LECommonLibrary.csproj -c Release
-          dotnet build src/LEProc/LEProc.csproj -c Release
-          dotnet build src/LEGUI/LEGUI.csproj -c Release
+      # ---- 1. C++ 核心與組件編譯 ----
 
-      # ---- 2. 編譯 C++ 組件 (Core 核心) ----
-      # 根據專案 sln 結構，核心 DLL 僅支援 Win32 平台
-      - name: Build C++ Core (Win32 Only)
+      - name: Build Core (Win32 Only)
         run: |
-          msbuild "src/Core/LoaderDll/LoaderDll.vcxproj" /p:Configuration=Release /p:Platform=Win32 /p:PlatformToolset=v143 /p:SolutionDir="${{ env.SOLUTION_DIR }}" /v:minimal
-          msbuild "src/Core/LocaleEmulator/LocaleEmulator.vcxproj" /p:Configuration=Release /p:Platform=Win32 /p:PlatformToolset=v143 /p:SolutionDir="${{ env.SOLUTION_DIR }}" /v:minimal
-          msbuild "src/Core/Loader/Loader.vcxproj" /p:Configuration=Release /p:Platform=Win32 /p:PlatformToolset=v143 /p:SolutionDir="${{ env.SOLUTION_DIR }}" /v:minimal
-
-      # ---- 3. 彙整打包 (免安裝版路徑結構) ----
-      - name: Assemble Final Package
+          msbuild src/Core/LoaderDll/LoaderDll.vcxproj /p:Configuration=Release /p:Platform=Win32 /p:PlatformToolset=v143 "/p:SolutionDir=$env:SOLUTION_DIR" /v:minimal
+          msbuild src/Core/LocaleEmulator/LocaleEmulator.vcxproj /p:Configuration=Release /p:Platform=Win32 /p:PlatformToolset=v143 "/p:SolutionDir=$env:SOLUTION_DIR" /v:minimal
+          msbuild src/Core/Loader/Loader.vcxproj /p:Configuration=Release /p:Platform=Win32 /p:PlatformToolset=v143 "/p:SolutionDir=$env:SOLUTION_DIR" /v:minimal
         shell: pwsh
+
+      - name: Build ShellExtension (Win32 + x64)
         run: |
-          $outPath = "Output/LocaleEmulator"
-          if (!(Test-Path $outPath)) { New-Item -ItemType Directory -Force -Path $outPath }
-          
-          # A. 發佈 .NET 執行檔 (x64)
-          # 雖然核心是 32位元，但主介面與進程啟動器可以使用 x64 運行
-          dotnet publish src/LEProc/LEProc.csproj -c Release -r win-x64 --self-contained false -o $outPath
-          dotnet publish src/LEGUI/LEGUI.csproj -c Release -r win-x64 --self-contained false -o $outPath
-          
-          # B. 建立 32位元相容資料夾 (LE 核心尋找路徑)
-          $x86Path = New-Item -ItemType Directory -Force -Path (Join-Path $outPath "x86")
+          msbuild src/ShellExtension/ShellExtension.vcxproj /p:Configuration=Release /p:Platform=Win32 /p:PlatformToolset=v143 "/p:SolutionDir=$env:SOLUTION_DIR" /v:minimal
+          msbuild src/ShellExtension/ShellExtension.vcxproj /p:Configuration=Release /p:Platform=x64 /p:PlatformToolset=v143 "/p:SolutionDir=$env:SOLUTION_DIR" /v:minimal
+        shell: pwsh
 
-          # C. 複製 C++ Win32 組件到正確位置
-          # 由於專案設定僅有 Win32，輸出通常在專案目錄下的 Release/ 
-          Copy-Item "src/Core/LoaderDll/Release/LoaderDll.dll" -Destination $outPath -Force
-          Copy-Item "src/Core/LocaleEmulator/Release/LocaleEmulator.dll" -Destination $outPath -Force
-          Copy-Item "src/Core/Loader/Release/Loader.exe" -Destination $outPath -Force
+      # ---- 2. .NET 組件編譯與發佈 ----
+
+      - name: Publish .NET Apps
+        run: |
+          # 直接發佈到統一的輸出路徑 Build/Release/x86/
+          dotnet publish src/LEProc/LEProc.csproj -c Release -o Build/Release/x86/
+          dotnet publish src/LEGUI/LEGUI.csproj -c Release -o Build/Release/x86/
+
+      # ---- 3. 彙整最終成品 (Assemble) ----
+
+      - name: Assemble Files
+        run: |
+          $targetDir = "Build/Release/x86/"
           
-          # D. 同時複製一份到 x86 資料夾，確保 32位元環境調用
-          Copy-Item "src/Core/LoaderDll/Release/LoaderDll.dll" -Destination $x86Path -Force
-          Copy-Item "src/Core/LocaleEmulator/Release/LoaderDll.dll" -Destination $x86Path -Force 
+          # 複製編譯好的 C++ DLL 到打包目錄
+          # 注意：原版腳本顯示 LoaderDll 等檔案編譯後在 src/Core/.../Release 下
+          Copy-Item src/Core/LoaderDll/Release/LoaderDll.dll $targetDir -Force
+          Copy-Item src/Core/LocaleEmulator/Release/LocaleEmulator.dll $targetDir -Force
           
-          # E. 複製語言資源檔 (如果專案中有放置語言檔)
+          # 如果有語言檔也要帶走
           if (Test-Path "src/LEGUI/Lang") {
-              Copy-Item "src/LEGUI/Lang" -Destination $outPath -Recurse -Force
+              Copy-Item "src/LEGUI/Lang" -Destination $targetDir -Recurse -Force
           }
-          
-          Write-Host "Windows 10 x64 完整版彙整完成！" -ForegroundColor Green
 
-      # ---- 4. 上傳成品 (Artifacts) ----
-      - name: Upload Build
+          Write-Host "打包內容確認：" -ForegroundColor Cyan
+          Get-ChildItem $targetDir -Name
+        shell: pwsh
+
+      # ---- 4. 上傳成品 ----
+
+      - name: Upload Build Artifact
         uses: actions/upload-artifact@v4
         with:
           name: LocaleEmulator-Win10-x64-forme
-          path: Output/LocaleEmulator/
+          path: |
+            Build/Release/x86/
+            # 如果需要 64位元選單擴充也一併帶走
+            src/ShellExtension/x64/Release/ShellExtension.dll
           retention-days: 14
