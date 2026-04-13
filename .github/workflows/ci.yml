@@ -19,9 +19,7 @@ env:
 jobs:
   build:
     name: Full Build & Package
-    # 這裡建議使用 windows-latest，我們會手動處理工具鏈降級(v143)
-    # 如果你的專案非要 v145，請確保環境支援
-    runs-runs-on: windows-latest
+    runs-on: windows-latest
 
     steps:
       - name: Checkout repository
@@ -65,9 +63,9 @@ jobs:
       - name: Assemble Files
         run: |
           $targetDir = "Build/Release/x86/"
+          if (!(Test-Path $targetDir)) { New-Item -ItemType Directory -Force -Path $targetDir }
           
           # 複製編譯好的 C++ DLL 到打包目錄
-          # 注意：原版腳本顯示 LoaderDll 等檔案編譯後在 src/Core/.../Release 下
           Copy-Item src/Core/LoaderDll/Release/LoaderDll.dll $targetDir -Force
           Copy-Item src/Core/LocaleEmulator/Release/LocaleEmulator.dll $targetDir -Force
           
@@ -88,6 +86,5 @@ jobs:
           name: LocaleEmulator-Win10-x64-forme
           path: |
             Build/Release/x86/
-            # 如果需要 64位元選單擴充也一併帶走
             src/ShellExtension/x64/Release/ShellExtension.dll
           retention-days: 14
