@@ -1,22 +1,15 @@
 # ============================================================
-# Locale Emulator - CI Workflow
-# ============================================================
-# .NET: dotnet build/test (self-contained SDK resolution)
-# C++:  msbuild individual vcxproj (VS Build Tools)
-# Core only has Release|Win32 config
+# Locale Emulator - Private CI Workflow (Standard x64 Build)
 # ============================================================
 
-name: CI
+name: Build Release
 
 on:
   push:
-    branches: [ master ]
-  pull_request:
-    branches: [ master ]
+    branches: forme # 支援常見的主分支名稱
 
 permissions:
   contents: read
-  pull-requests: write
 
 env:
   DOTNET_NOLOGO: true
@@ -24,151 +17,64 @@ env:
   SOLUTION_DIR: ${{ github.workspace }}\
 
 jobs:
-  build-and-test:
-    name: Build & Test
-    runs-on: windows-2025-vs2026
+  build:
+    name: Full Build & Package
+    runs-on: windows-latest # 使用最新的 Windows 跑者
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
-      - name: Setup .NET 10 SDK (x64)
-        uses: actions/setup-dotnet@v5
+      - name: Setup .NET SDKs
+        uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: '10.0.x'
-
-      # LEProc has PlatformTarget=x86 → dotnet test --arch x86 needs x86 SDK
-      - name: Setup .NET 10 SDK (x86)
-        uses: actions/setup-dotnet@v5
-        with:
-          dotnet-version: '10.0.x'
-          architecture: x86
+          dotnet-version: '10.0.x' # 確保與你目前的 SDK 版本一致
 
       - name: Setup MSBuild
-        uses: microsoft/setup-msbuild@v3
+        uses: microsoft/setup-msbuild@v2
 
-      # ---- .NET Build & Test ----
-
-      - name: Restore .NET dependencies
+      # ---- 1. 編譯 .NET 組件 (x64) ----
+      - name: Restore & Build .NET (x64)
         run: |
-          dotnet restore tests/LECommonLibrary.Tests/LECommonLibrary.Tests.csproj
-          dotnet restore tests/LEProc.Tests/LEProc.Tests.csproj
-          dotnet restore tests/LEGUI.Tests/LEGUI.Tests.csproj
+          dotnet restore
+          dotnet build -c Release --arch x64
 
-      - name: Build .NET projects (Debug)
+      # ---- 2. 編譯 C++ 組件 (x64 & Win32) ----
+      # Locale Emulator 仍需要 Win32 組件來注入 32 位元遊戲
+      - name: Build C++ Core & Shell (Win32)
         run: |
-          dotnet build tests/LECommonLibrary.Tests/LECommonLibrary.Tests.csproj -c Debug --no-restore
-          dotnet build tests/LEProc.Tests/LEProc.Tests.csproj -c Debug --no-restore
-          dotnet build tests/LEGUI.Tests/LEGUI.Tests.csproj -c Debug --no-restore
+          msbuild src/Core/LoaderDll/LoaderDll.vcxproj /p:Configuration=Release /p:Platform=Win32 /p:SolutionDir="$env:SOLUTION_DIR" /v:minimal
+          msbuild src/Core/LocaleEmulator/LocaleEmulator.vcxproj /p:Configuration=Release /p:Platform=Win32 /p:SolutionDir="$env:SOLUTION_DIR" /v:minimal
+          msbuild src/ShellExtension/ShellExtension.vcxproj /p:Configuration=Release /p:Platform=Win32 /p:SolutionDir="$env:SOLUTION_DIR" /v:minimal
 
-      - name: Run .NET tests (x64)
+      - name: Build C++ Core & Shell (x64)
         run: |
-          dotnet test tests/LECommonLibrary.Tests/LECommonLibrary.Tests.csproj --no-build -c Debug --logger "console;verbosity=detailed" --collect:"XPlat Code Coverage" --results-directory coverage
-          dotnet test tests/LEGUI.Tests/LEGUI.Tests.csproj --no-build -c Debug --logger "console;verbosity=detailed" --collect:"XPlat Code Coverage" --results-directory coverage
+          msbuild src/Core/LoaderDll/LoaderDll.vcxproj /p:Configuration=Release /p:Platform=x64 /p:SolutionDir="$env:SOLUTION_DIR" /v:minimal
+          msbuild src/Core/LocaleEmulator/LocaleEmulator.vcxproj /p:Configuration=Release /p:Platform=x64 /p:SolutionDir="$env:SOLUTION_DIR" /v:minimal
+          msbuild src/ShellExtension/ShellExtension.vcxproj /p:Configuration=Release /p:Platform=x64 /p:SolutionDir="$env:SOLUTION_DIR" /v:minimal
 
-      - name: Run LEProc.Tests (x86)
-        run: dotnet test tests/LEProc.Tests/LEProc.Tests.csproj --arch x86 -c Debug --logger "console;verbosity=detailed" --collect:"XPlat Code Coverage" --results-directory coverage
-
-      # ---- Code Coverage Report ----
-
-      - name: Install ReportGenerator
-        if: '!cancelled()'
-        run: dotnet tool install -g dotnet-reportgenerator-globaltool
-
-      - name: Generate Coverage Report
-        if: '!cancelled()'
-        run: reportgenerator "-reports:coverage/*/coverage.cobertura.xml" "-targetdir:coveragereport" "-reporttypes:MarkdownSummaryGithub"
+      # ---- 3. 彙整打包 (Assemble) ----
+      - name: Assemble Final Package
         shell: pwsh
+        run: |
+          # 建立輸出目錄
+          New-Item -ItemType Directory -Force -Path "Output/LocaleEmulator"
+          
+          # 發佈 .NET 主程式
+          dotnet publish src/LEProc/LEProc.csproj -c Release -r win-x64 --self-contained false -o Output/LocaleEmulator
+          dotnet publish src/LEGUI/LEGUI.csproj -c Release -r win-x64 --self-contained false -o Output/LocaleEmulator
+          
+          # 複製 C++ DLLs (x64)
+          Copy-Item src/Core/LoaderDll/x64/Release/LoaderDll.dll Output/LocaleEmulator/ -Force
+          Copy-Item src/Core/LocaleEmulator/x64/Release/LocaleEmulator.dll Output/LocaleEmulator/ -Force
+          Copy-Item src/ShellExtension/x64/Release/ShellExtension.dll Output/LocaleEmulator/ -Force
+          
+          Write-Host "Package assembled in Output/LocaleEmulator" -ForegroundColor Green
 
-      - name: Write Coverage to Job Summary
-        if: '!cancelled()'
-        run: Get-Content coveragereport/SummaryGithub.md | Add-Content $env:GITHUB_STEP_SUMMARY
-        shell: pwsh
-
-      - name: Add Coverage PR Comment
-        uses: marocchino/sticky-pull-request-comment@v3
-        if: github.event_name == 'pull_request' && !cancelled()
+      # ---- 4. 上傳成品 ----
+      - name: Upload Build
+        uses: actions/upload-artifact@v4
         with:
-          recreate: true
-          path: coveragereport/SummaryGithub.md
-
-      # ---- C++ Build ----
-      # Pass SolutionDir so $(SolutionDir) resolves correctly in vcxproj OutDir
-
-      - name: Build Core (Release|Win32)
-        run: |
-          msbuild src/Core/LoaderDll/LoaderDll.vcxproj /p:Configuration=Release /p:Platform=Win32 "/p:SolutionDir=$env:SOLUTION_DIR" /v:minimal
-          msbuild src/Core/LocaleEmulator/LocaleEmulator.vcxproj /p:Configuration=Release /p:Platform=Win32 "/p:SolutionDir=$env:SOLUTION_DIR" /v:minimal
-          msbuild src/Core/Loader/Loader.vcxproj /p:Configuration=Release /p:Platform=Win32 "/p:SolutionDir=$env:SOLUTION_DIR" /v:minimal
-        shell: pwsh
-
-      - name: Build ShellExtension + C++ tests (Release|Win32)
-        run: |
-          msbuild src/ShellExtension/ShellExtension.vcxproj /p:Configuration=Release /p:Platform=Win32 "/p:SolutionDir=$env:SOLUTION_DIR" /v:minimal
-          msbuild tests/SmokeTest/LocaleTestApp/LocaleTestApp.vcxproj /p:Configuration=Release /p:Platform=Win32 "/p:SolutionDir=$env:SOLUTION_DIR" /v:minimal
-          msbuild tests/Core.Tests/Core.Tests.vcxproj /p:Configuration=Release /p:Platform=Win32 "/p:SolutionDir=$env:SOLUTION_DIR" /v:minimal
-        shell: pwsh
-
-      - name: Build ShellExtension + tests (Release|x64)
-        run: |
-          msbuild src/ShellExtension/ShellExtension.vcxproj /p:Configuration=Release /p:Platform=x64 "/p:SolutionDir=$env:SOLUTION_DIR" /v:minimal
-          msbuild tests/ShellExtension.Tests/ShellExtension.Tests.vcxproj /p:Configuration=Release /p:Platform=x64 "/p:SolutionDir=$env:SOLUTION_DIR" /v:minimal
-        shell: pwsh
-
-      # ---- Assemble runtime directory ----
-      # Build/Release/x86/ = complete product directory per README/CLAUDE.md:
-      #   LEProc.exe, LEGUI.exe, LECommonLibrary.dll (.NET)
-      #   LoaderDll.dll, LocaleEmulator.dll (Core native)
-      #   ShellExtension.dll (C++, already here via vcxproj OutDir)
-      #   LocaleTestApp.exe (C++ test app, already here via vcxproj OutDir)
-
-      - name: Assemble runtime directory
-        run: |
-          dotnet publish src/LEProc/LEProc.csproj -c Release -o Build/Release/x86/
-          dotnet publish src/LEGUI/LEGUI.csproj -c Release -o Build/Release/x86/
-          Copy-Item src/Core/LoaderDll/Release/LoaderDll.dll Build/Release/x86/ -Force
-          Copy-Item src/Core/LocaleEmulator/Release/LocaleEmulator.dll Build/Release/x86/ -Force
-          Write-Host "Assembled files:" -ForegroundColor Cyan
-          Get-ChildItem Build/Release/x86/ -Name | ForEach-Object { Write-Host "  $_" }
-        shell: pwsh
-
-      # ---- C++ Tests ----
-
-      - name: Run C++ tests
-        run: |
-          $failed = $false
-          # x86 tests
-          $exes86 = Get-ChildItem -Path "Build\Release\x86" -Filter "*Tests*.exe" -Recurse -ErrorAction SilentlyContinue
-          foreach ($exe in $exes86) {
-            Write-Host "Running: $($exe.FullName)" -ForegroundColor Cyan
-            & $exe.FullName
-            if ($LASTEXITCODE -ne 0) { Write-Host "FAILED: $($exe.Name)" -ForegroundColor Red; $failed = $true }
-          }
-          # x64 tests
-          $exes64 = Get-ChildItem -Path "Build\Release\x64" -Filter "*Tests*.exe" -Recurse -ErrorAction SilentlyContinue
-          foreach ($exe in $exes64) {
-            Write-Host "Running: $($exe.FullName)" -ForegroundColor Cyan
-            & $exe.FullName
-            if ($LASTEXITCODE -ne 0) { Write-Host "FAILED: $($exe.Name)" -ForegroundColor Red; $failed = $true }
-          }
-          if ($failed) { exit 1 }
-        shell: pwsh
-
-      # ---- Smoke Test ----
-
-      - name: Smoke Tests
-        run: .\tests\SmokeTest\Invoke-SmokeTest.ps1
-        shell: pwsh
-        if: success()
-
-      # ---- Artifacts ----
-
-      - name: Upload build artifacts
-        uses: actions/upload-artifact@v7
-        if: always()
-        with:
-          name: build-output
-          path: |
-            Build/Release/x86/
-            Build/Release/x64/
-          retention-days: 7
+          name: LocaleEmulator-Win10-x64
+          path: Output/LocaleEmulator/
+          retention-days: 30 # 增加保留時間到 30 天
