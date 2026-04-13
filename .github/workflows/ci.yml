@@ -7,7 +7,7 @@ name: Build Release
 
 on:
   push:
-    branches: [ "forme" ] # 僅在你的個人分支觸發
+    branches: [ "forme" ]
 
 permissions:
   contents: read
@@ -26,12 +26,12 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          submodules: recursive # 確保如有 submodules 也一併拉取
+          submodules: recursive
 
       - name: Setup .NET SDK
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: '10.0.x' # 配合你 sln 的 VS Version 18
+          dotnet-version: '10.0.x'
 
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
@@ -44,18 +44,18 @@ jobs:
           dotnet build src/LEProc/LEProc.csproj -c Release --arch x64
           dotnet build src/LEGUI/LEGUI.csproj -c Release --arch x64
 
-      # ---- 2. 編譯 C++ 組件 (必須包含 Win32 以相容 32位元遊戲) ----
+      # ---- 2. 編譯 C++ 組件 (強制使用 v143 工具鏈以相容環境) ----
       - name: Build C++ Core (Win32)
         run: |
-          msbuild src/Core/LoaderDll/LoaderDll.vcxproj /p:Configuration=Release /p:Platform=Win32 /p:SolutionDir="$env:SOLUTION_DIR" /v:minimal
-          msbuild src/Core/LocaleEmulator/LocaleEmulator.vcxproj /p:Configuration=Release /p:Platform=Win32 /p:SolutionDir="$env:SOLUTION_DIR" /v:minimal
-          msbuild src/Core/Loader/Loader.vcxproj /p:Configuration=Release /p:Platform=Win32 /p:SolutionDir="$env:SOLUTION_DIR" /v:minimal
+          msbuild src/Core/LoaderDll/LoaderDll.vcxproj /p:Configuration=Release /p:Platform=Win32 /p:PlatformToolset=v143 /p:SolutionDir="$env:SOLUTION_DIR" /v:minimal
+          msbuild src/Core/LocaleEmulator/LocaleEmulator.vcxproj /p:Configuration=Release /p:Platform=Win32 /p:PlatformToolset=v143 /p:SolutionDir="$env:SOLUTION_DIR" /v:minimal
+          msbuild src/Core/Loader/Loader.vcxproj /p:Configuration=Release /p:Platform=Win32 /p:PlatformToolset=v143 /p:SolutionDir="$env:SOLUTION_DIR" /v:minimal
 
       - name: Build C++ Core (x64)
         run: |
-          msbuild src/Core/LoaderDll/LoaderDll.vcxproj /p:Configuration=Release /p:Platform=x64 /p:SolutionDir="$env:SOLUTION_DIR" /v:minimal
-          msbuild src/Core/LocaleEmulator/LocaleEmulator.vcxproj /p:Configuration=Release /p:Platform=x64 /p:SolutionDir="$env:SOLUTION_DIR" /v:minimal
-          msbuild src/Core/Loader/Loader.vcxproj /p:Configuration=Release /p:Platform=x64 /p:SolutionDir="$env:SOLUTION_DIR" /v:minimal
+          msbuild src/Core/LoaderDll/LoaderDll.vcxproj /p:Configuration=Release /p:Platform=x64 /p:PlatformToolset=v143 /p:SolutionDir="$env:SOLUTION_DIR" /v:minimal
+          msbuild src/Core/LocaleEmulator/LocaleEmulator.vcxproj /p:Configuration=Release /p:Platform=x64 /p:PlatformToolset=v143 /p:SolutionDir="$env:SOLUTION_DIR" /v:minimal
+          msbuild src/Core/Loader/Loader.vcxproj /p:Configuration=Release /p:Platform=x64 /p:PlatformToolset=v143 /p:SolutionDir="$env:SOLUTION_DIR" /v:minimal
 
       # ---- 3. 彙整打包 (免安裝完整版路徑結構) ----
       - name: Assemble Final Package
@@ -68,19 +68,19 @@ jobs:
           dotnet publish src/LEProc/LEProc.csproj -c Release -r win-x64 --self-contained false -o $outPath
           dotnet publish src/LEGUI/LEGUI.csproj -c Release -r win-x64 --self-contained false -o $outPath
           
-          # B. 建立 32位元相容夾 (這是 LE 運作的關鍵)
+          # B. 建立 32位元相容夾
           $x86Path = New-Item -ItemType Directory -Force -Path (Join-Path $outPath "x86")
 
-          # C. 複製 C++ 64位元 DLL/EXE
+          # C. 複製 C++ 64位元 DLL/EXE (注意：MSBuild x64 輸出通常在 x64/Release)
           Copy-Item "src/Core/LoaderDll/x64/Release/LoaderDll.dll" -Destination $outPath -Force
           Copy-Item "src/Core/LocaleEmulator/x64/Release/LocaleEmulator.dll" -Destination $outPath -Force
           Copy-Item "src/Core/Loader/x64/Release/Loader.exe" -Destination $outPath -Force
           
-          # D. 複製 C++ 32位元 DLL (供注入 32位元遊戲使用)
+          # D. 複製 C++ 32位元 DLL (輸出通常在 Release/)
           Copy-Item "src/Core/LoaderDll/Release/LoaderDll.dll" -Destination $x86Path -Force
           Copy-Item "src/Core/LocaleEmulator/Release/LocaleEmulator.dll" -Destination $x86Path -Force
           
-          Write-Host "Windows 10 x64 完整版彙整完成！" -ForegroundColor Green
+          Write-Host "彙整完成！" -ForegroundColor Green
 
       # ---- 4. 上傳成品 (Artifacts) ----
       - name: Upload Build
